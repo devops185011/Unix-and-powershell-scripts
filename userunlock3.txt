@@ -1,0 +1,326 @@
+﻿#User Add Delete on multiple servers
+$InvocatioPath = Split-Path $MyInvocation.MyCommand.Path
+ 
+$sshModulePath = "D:\Posh-SSH-master\Posh-SSH-master\Posh-SSH.psd1"
+
+if(!(Get-Module Posh-SSH)){Import-Module $sshModulePath}
+ 
+
+
+Function Get-Cred
+{
+    try
+    {
+        $a=get-credential
+        $u = $a.username
+        $user = $u.split("\")
+        $p = $a.password
+        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($p)
+        $pass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    }   
+    catch
+    {
+            $l= New-Object -ComObject wscript.shell
+            if($m -eq '1')
+            {
+                write-host 'Script cancelled'
+                $host.SetShouldExit(1)
+                exit
+            }
+            else
+            {
+                exit
+            }
+    }       
+    return $a
+}   
+
+$cred = Get-Crede -Message "Please Enter the SSH Login Credentials"
+ 
+  $LogFile = "$InvocatioPath\LogFile.txt"
+if (Test-Path $LogFile) 
+{
+  Remove-Item $LogFile
+}
+ 
+
+function GenerateForm
+{
+[void] [System.Reflection.Assembly]::LoadWithPartialName("System.Drawing") 
+[void] [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") 
+ 
+$objForm = New-Object System.Windows.Forms.Form 
+$objForm.Text = "User Unlock"
+$objForm.Size = New-Object System.Drawing.Size(400,250) 
+$objForm.StartPosition = "CenterScreen"
+ 
+$objForm.KeyPreview = $True
+$objForm.Add_KeyDown({if ($_.KeyCode -eq "Enter"){$x=$objTextBox.Text;$objForm.Close()}})
+$objForm.Add_KeyDown({if ($_.KeyCode -eq "Escape") {$objForm.Close()}})
+ 
+$objLabel = New-Object System.Windows.Forms.Label
+$objLabel.Location = New-Object System.Drawing.Size(30,40) 
+$objLabel.Size = New-Object System.Drawing.Size(100,20) 
+$objLabel.Text = "UserName :"
+$objForm.Controls.Add($objLabel)
+ 
+$objTextBox = New-Object System.Windows.Forms.TextBox 
+$objTextBox.Location = New-Object System.Drawing.Size(160,40)
+$objTextBox.Size = New-Object System.Drawing.Size(120,40)
+$objForm.Controls.Add($objTextBox) 
+$objTextBox.Text = $MaxNoOfJobs
+ 
+$OpenFileDialog = New-Object System.Windows.Forms.OpenFileDialog
+$OpenFileDialog.filter = "TXT (*.txt)| *.txt"
+ 
+$button1 = New-Object system.Windows.Forms.Button
+$button1.Text = "Browse"
+$button1.Add_Click({$OpenFileDialog.ShowDialog() | Out-Null;})
+$button1.Location = New-Object System.Drawing.Size(160,120)
+$button1.Size = New-Object System.Drawing.Size(180,20) 
+$objForm.Controls.Add($button1) 
+ 
+$FolderPath = New-Object System.Windows.Forms.Label
+$FolderPath.Location = New-Object System.Drawing.Size(30,20) 
+$FolderPath.Size = New-Object System.Drawing.Size(30,140) 
+$FolderPath.Text = $BrowsedPath
+$objForm.Controls.Add($FolderPath)
+ 
+$OKButton = New-Object System.Windows.Forms.Button
+$OKButton.Location = New-Object System.Drawing.Size(215,170)
+$OKButton.Size = New-Object System.Drawing.Size(75,23)
+$OKButton.Text = "OK"
+$OKButton.Add_Click({$x=$objTextBox.Text;$objForm.Close()})
+$objForm.Controls.Add($OKButton)
+ 
+ 
+$CancelButton = New-Object System.Windows.Forms.Button
+$CancelButton.Location = New-Object System.Drawing.Size(290,170)
+$CancelButton.Size = New-Object System.Drawing.Size(75,23)
+$CancelButton.Text = "Cancel"
+$CancelButton.Add_Click({$objForm.Close()})
+$objForm.Controls.Add($CancelButton)
+ 
+$objForm.Topmost = $True
+ 
+$objForm.Add_Shown({$objForm.Activate()})
+[void] $objForm.ShowDialog()
+ 
+$Properties = @{ServerList=$OpenFileDialog.filename;
+                UserName=$objTextBox.Text;
+                Group=$objTextBox1.Text;
+                UserAction=$(if($radioButton1.Checked){1}elseif($radioButton2.Checked){2}else{});
+                Sudoers=$objCheckBox.Checked
+                }
+$Obj = New-Object -TypeName PSObject -Property $Properties
+Write-Output $Obj
+[void]$objForm.Dispose()
+}
+ 
+ 
+$formObj = GenerateForm
+$userIDs = ($formObj.UserName).split(",")
+$UsrAction = $formObj.UserAction
+ 
+
+
+
+if(Test-Path $($formObj.ServerList)){
+    Write-Verbose "Found servers.txt File"
+    $serverList = Get-Content $($formObj.ServerList)
+    $serverList = $serverList | %{$_.trim() | ?{$_ -ne ""}}    
+    $report=foreach($serverName in $serverList){                
+               
+               if(Test-Connection -ComputerName $serverName -Count 1 -ErrorAction SilentlyContinue)
+  {
+    #Pingable server
+    write-host  "server $serverName is pingable" -ForegroundColor Cyan
+ 
+               
+                Write-Verbose "Creating Session With $serverName"
+                $session = New-SSHSession -ComputerName $serverName -Credential $cred -Port 22 -AcceptKey -ConnectionTimeout 60 -ErrorAction Stop
+                $checkVersion="uname -a"
+ 
+                if($session.Connected)
+                {
+                    Write-Host "Connected to $serverName"
+
+                    $systemVersion=Invoke-SSHCommand -SSHSession $session -Command $checkVersion -EnsureConnection -ErrorAction Stop | select -exp Output 
+                               
+                     if($systemVersion -match "linux")
+                      {
+
+                      write-output "$serverName is linux system"
+                    $ShellStream = New-SSHShellStream -SSHSession $session
+ 
+                    foreach($userID in $userIDs)
+                    {
+                          $AddUserCmdText = "sudo  passwd -u $userID"
+                        #$DeleteUserCmdText = "sudo userdel -r $userID"
+                        $CheckUser = "`grep $userID /etc/passwd "
+                       $checkStatus="sudo passwd -S $userID|awk '{print `$2`}' "
+                                try
+                               {
+                                    $UserExists = Invoke-SSHCommand -SSHSession $session -Command $CheckUser -EnsureConnection -ErrorAction Stop | select -exp Output 
+                               
+                                }
+                                catch
+                                {
+                                  $session.Connect()
+                                    $UserExists = Invoke-SSHCommand -SSHSession $session -Command $CheckUser -EnsureConnection -ErrorAction Stop | select -exp Output 
+                                }
+
+                               
+                            if($UserExists -match $userID)
+                             { $val= Invoke-SSHStreamExpectAction -ShellStream $ShellStream -ExpectString "password for $($cred.UserName):" -Command $AddUserCmdText -Action $($Cred.GetNetworkCredential().Password) -timeout 10        
+                                    
+                                    $sshcontent = $ShellStream.Read()
+                                    Write-Host $sshcontent
+                                   
+  $Status= Invoke-SSHStreamExpectAction -ShellStream $ShellStream -ExpectString "password for $($cred.UserName):" -Command $checkStatus -Action $($Cred.GetNetworkCredential().Password) -timeout 10        
+                                                           
+                                      $sshcontent1 = $ShellStream.Read()
+                                       Write-Host $sshcontent1
+                                     if($sshcontent1 -match $userID)
+                                    {
+                                       
+                                        Write-Output "successfully unlocked user $userID" 
+                                    }
+                                        
+                                    
+                               else{
+                                        Write-Output "could not unlocK user $userID"
+                                   } #end of nested if else
+                        
+                        
+                             }  #end of userexist if
+                         else{
+                         Write-Output "user $userID does not exist"
+                             } #######
+    
+                            } #end of for for users
+    
+                    $shellstream.dispose()
+                    
+                
+                } #end of if system version check#
+              
+
+                   else
+                    {
+                    
+                    
+                     write-output "$serverName is unix system"
+                    $ShellStream = New-SSHShellStream -SSHSession $session
+ 
+                    foreach($userID in $userIDs)
+                    {
+
+                          
+                            $changeStatus = "sudo chuser account_locked=false unsuccessful_login_count=0  $userID"
+                        $CheckUser = "`grep $userID /etc/passwd "
+
+                       $checkStatus="sudo lsuser $userID |`grep -E 'account_locked=false|unsuccessful_login_count=0' |awk '{print `$1`}' "
+
+                           
+
+                      
+                
+                
+                                try
+                                {
+                                    $UserExists = Invoke-SSHCommand -SSHSession $session -Command $CheckUser -EnsureConnection -ErrorAction Stop | select -exp Output 
+                               
+                                }
+                                catch
+                                {
+                                    $session.Connect()
+                                    $UserExists = Invoke-SSHCommand -SSHSession $session -Command $CheckUser -EnsureConnection -ErrorAction Stop | select -exp Output 
+                                }
+
+                               
+                            if($UserExists -match $userID)
+                             {
+                                   $val=Invoke-SSHStreamExpectAction -ShellStream $ShellStream -ExpectString "password for $($cred.UserName):" -Command $changeStatus -Action $($Cred.GetNetworkCredential().Password) -timeout 10        
+                                    
+                                    $sshcontent = $ShellStream.Read()
+                                    Write-Host $sshcontent
+
+                                     
+                                   
+$val2=Invoke-SSHStreamExpectAction -ShellStream $ShellStream -ExpectString "password for $($cred.UserName):" -Command $checkStatus -Action $($Cred.GetNetworkCredential().Password)  -timeout 10       
+                                                           
+                                      $sshcontent1 = $ShellStream.Read()
+                                       Write-Host $sshcontent1
+
+                                     if($sshcontent1 -match $userID)
+                                    {
+                                        
+                                        Write-Output "successfully unlocked user $userID" 
+                                    }
+                                        
+                                    
+                               else{
+                                        Write-Output "could not unlocK user $userID"
+                                   } #end of nested if else
+                        
+                        
+                             }  #end of userexist if
+                         else{
+                         Write-Output "user $userID does not exist"
+                             } #######
+    
+                            } #end of for for users
+    
+                    $shellstream.dispose()
+                    
+                
+
+
+                   }
+
+                   }
+                    ##end of system connected  if
+                    else{
+                  Write-Output "$serverName SSH Connection Failed $userID"
+                    }
+
+                $session.Disconnect()
+                Remove-SSHSession -SSHSession $session -Verbose | Out-Null
+                    }
+                    
+                    else
+                    {
+                   write-host "server $serverName is not pingable" -ForegroundColor Red
+                   
+                    Write-Output "server $serverName is not pingable" | out-file "$InvocatioPath\LogFile.txt"
+                   
+                   # Write-Output "server $serverName is not pingable" | out-file "$InvocatioPath\LogFile$(get-date -Format d).txt"
+                    
+                    }
+                    }#ForLoop End for serverlist
+                    
+                    
+                    }
+                    else{
+                        Write-Warning "Server List not found" 
+                        } #####end of outermost if
+ 
+
+ $FileName = "$InvocatioPath\userUnlockOutput.txt"
+if (Test-Path $FileName) 
+{
+  Remove-Item $FileName
+}
+ 
+ else
+ {
+ 
+ Write-Host ""
+ }
+$report
+$report| out-file $FileName -Append
+
+
+ 
+#If Add  
